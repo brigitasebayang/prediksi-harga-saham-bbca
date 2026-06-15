@@ -83,7 +83,6 @@ menu = st.sidebar.radio(
     "Menu",
     [
         "Prediksi Harga",
-        "Evaluasi Model",
         "Panduan Penggunaan"
     ]
 )
