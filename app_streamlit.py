@@ -150,7 +150,7 @@ if menu == "Prediksi Harga":
 
     data.append(row3)
 
-    if st.button("🔮 Prediksi Harga Besok"):
+    if st.button("Prediksi Harga Besok"):
 
         df = pd.DataFrame(
             data,
