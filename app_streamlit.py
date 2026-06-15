@@ -217,21 +217,34 @@ elif menu == "Evaluasi Model":
 
     st.title("📊 Evaluasi Model XGBoost")
 
+    # Ambil nilai dengan aman
+    rmse = results.get("RMSE", results.get("rmse", 0))
+    mae = results.get("MAE", results.get("mae", 0))
+    r2 = results.get("R2", results.get("r2", 0))
+    best_lb = results.get(
+        "Best_Lookback",
+        results.get("best_lookback", "-")
+    )
+
+    # Tampilkan isi JSON untuk debugging
+    with st.expander("Lihat Data Results"):
+        st.json(results)
+
     col1, col2, col3 = st.columns(3)
 
     col1.metric(
         "RMSE",
-        f"{results['RMSE']:.2f}"
+        f"{rmse:.2f}" if isinstance(rmse, (int, float)) else str(rmse)
     )
 
     col2.metric(
         "MAE",
-        f"{results['MAE']:.2f}"
+        f"{mae:.2f}" if isinstance(mae, (int, float)) else str(mae)
     )
 
     col3.metric(
         "R²",
-        f"{results['R2']:.4f}"
+        f"{r2:.4f}" if isinstance(r2, (int, float)) else str(r2)
     )
 
     st.markdown("---")
@@ -239,7 +252,7 @@ elif menu == "Evaluasi Model":
     st.subheader("Informasi Model")
 
     st.write(
-        f"Lookback Terbaik : {results['Best_Lookback']} Hari"
+        f"Lookback Terbaik : {best_lb} Hari"
     )
 
     st.write(
@@ -258,17 +271,28 @@ elif menu == "Evaluasi Model":
 
     st.subheader("Interpretasi")
 
-    st.success(
-        f"""
-        Nilai R² sebesar {results['R2']:.4f}
-        menunjukkan model mampu menjelaskan sekitar
-        {results['R2']*100:.2f}% variasi data.
+    if isinstance(r2, (int, float)):
 
-        RMSE dan MAE yang rendah menunjukkan
-        model memiliki tingkat kesalahan prediksi
-        yang relatif kecil.
-        """
-    )
+        st.success(
+            f"""
+            Nilai R² sebesar {r2:.4f}
+            menunjukkan model mampu menjelaskan sekitar
+            {r2*100:.2f}% variasi data.
+
+            RMSE sebesar {rmse:.2f}
+            dan MAE sebesar {mae:.2f}
+            menunjukkan tingkat kesalahan prediksi model.
+            """
+        )
+
+    else:
+
+        st.warning(
+            """
+            Data evaluasi model tidak ditemukan
+            atau format file JSON tidak sesuai.
+            """
+        )
 
 # ==========================================================
 # PANDUAN
