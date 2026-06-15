@@ -95,14 +95,6 @@ if menu == "Prediksi Harga":
 
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
 
-    st.info(
-        """
-        Masukkan data OHLCV untuk 3 hari terakhir.
-        Sistem akan memprediksi harga penutupan (Close)
-        pada hari perdagangan berikutnya.
-        """
-    )
-
     cols = [
         "Open",
         "High",
