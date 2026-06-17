@@ -210,14 +210,9 @@ if menu == "Prediksi Harga":
                     "Volume (3 Hari Lalu)"
                 ]
                 
-                n_features = min(
-                    len(feature_names),
-                    len(importance)
-                )
-                
                 importance_df = pd.DataFrame({
-                    "Faktor": feature_names[:n_features],
-                    "Tingkat Pengaruh": importance[:n_features]
+                    "Faktor": feature_names,
+                    "Tingkat Pengaruh": importance
                 })
                 
                 importance_df = (
