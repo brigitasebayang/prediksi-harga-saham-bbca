@@ -196,120 +196,78 @@ if menu == "Prediksi Harga":
                     "Low (1 Hari Lalu)",
                     "Close (1 Hari Lalu)",
                     "Volume (1 Hari Lalu)",
-                
+            
                     "Open (2 Hari Lalu)",
                     "High (2 Hari Lalu)",
                     "Low (2 Hari Lalu)",
                     "Close (2 Hari Lalu)",
                     "Volume (2 Hari Lalu)",
-                
+            
                     "Open (3 Hari Lalu)",
                     "High (3 Hari Lalu)",
                     "Low (3 Hari Lalu)",
                     "Close (3 Hari Lalu)",
                     "Volume (3 Hari Lalu)"
                 ]
-                
+            
+                importance = model.feature_importances_
+            
+                # menghindari mismatch jumlah fitur
+                feature_names = feature_names[:len(importance)]
+            
                 importance_df = pd.DataFrame({
                     "Faktor": feature_names,
                     "Tingkat Pengaruh": importance
                 })
-                
-                importance_df = (
-                    importance_df
-                    .sort_values(
-                        by="Importance",
-                        ascending=False
-                    )
-                    .reset_index(drop=True)
+            
+                importance_df = importance_df.sort_values(
+                    by="Tingkat Pengaruh",
+                    ascending=False
                 )
-                
+            
                 st.markdown("---")
-                st.subheader("📊 Faktor yang Mempengaruhi Prediksi")
-                
-                fig, ax = plt.subplots(figsize=(8, 5))
-                
-                ax.barh(
-                    importance_df["Feature"][:10],
-                    importance_df["Importance"][:10]
+            
+                st.subheader(
+                    "📊 Faktor yang Mempengaruhi Prediksi"
                 )
-                
-                ax.set_xlabel("Tingkat Pengaruh")
-                ax.set_ylabel("Fitur")
-                
-                ax.invert_yaxis()
-                
-                st.pyplot(fig)
-                
-                st.markdown(
-                    """
-                    **Interpretasi Model**
-                
-                    Grafik di atas menunjukkan tingkat pengaruh masing-masing
-                    fitur terhadap hasil prediksi yang dihasilkan oleh model
-                    XGBoost. Semakin tinggi nilai pengaruh suatu fitur,
-                    semakin besar kontribusinya dalam menentukan hasil
-                    prediksi harga saham.
-                    """
-                )
-                
-                st.dataframe(
-                    importance_df.head(10),
-                    use_container_width=True
-                )
-                
-                top_feature = importance_df.iloc[0]["Feature"]
-                
-                st.info(
-                    f"Fitur yang paling berpengaruh terhadap prediksi model adalah **{top_feature}**."
-                )
-                
-                for lag in range(1, 4):
-                
-                    feature_names.extend([
-                        f"Open_lag{lag}",
-                        f"High_lag{lag}",
-                        f"Low_lag{lag}",
-                        f"Close_lag{lag}",
-                        f"Volume_lag{lag}"
-                    ])
-                
-                importance_df = pd.DataFrame({
-                    "Feature": feature_names,
-                    "Importance": model.feature_importances_
-                })
-                
-                importance_df = (
-                    importance_df
-                    .sort_values(
-                        by="Importance",
-                        ascending=False
-                    )
-                )
-                
-                st.markdown("---")
-                st.subheader("📊 Feature Importance")
-                
+            
                 fig, ax = plt.subplots(
                     figsize=(8, 5)
                 )
-                
+            
                 ax.barh(
-                    importance_df["Feature"][:10],
-                    importance_df["Importance"][:10]
+                    importance_df["Faktor"].head(10),
+                    importance_df["Tingkat Pengaruh"].head(10)
                 )
-                
-                ax.set_xlabel("Importance Score")
-                ax.set_ylabel("Feature")
+            
+                ax.set_xlabel("Tingkat Pengaruh")
+                ax.set_ylabel("Faktor")
+            
                 ax.invert_yaxis()
-                
+            
                 st.pyplot(fig)
-                
+            
+                st.markdown(
+                    """
+                    **Interpretasi Model**
+            
+                    Grafik di atas menunjukkan tingkat pengaruh
+                    masing-masing faktor terhadap prediksi yang
+                    dihasilkan oleh model XGBoost.
+                    Semakin besar nilainya, semakin besar pula
+                    kontribusinya dalam menghasilkan prediksi.
+                    """
+                )
+            
                 st.dataframe(
                     importance_df.head(10),
                     use_container_width=True
                 )
-
+            
+                st.info(
+                    f"Faktor yang paling berpengaruh adalah **{importance_df.iloc[0]['Faktor']}**."
+                )
+            
             except Exception as e:
                 st.error(str(e))
 
