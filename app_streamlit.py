@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 # ==========================================================
 # PAGE CONFIG
 # ==========================================================
-
 st.set_page_config(
     page_title="Prediksi Harga Saham BBCA",
     page_icon="📈",
@@ -19,10 +18,8 @@ st.set_page_config(
 # ==========================================================
 # LOAD MODEL
 # ==========================================================
-
 @st.cache_resource
 def load_model():
-
     model = xgb.XGBRegressor()
     model.load_model("xgboost_best_lb3.json")
 
@@ -33,32 +30,27 @@ def load_model():
 
     return model, scaler, results
 
+
 model, scaler, results = load_model()
 
 # ==========================================================
 # FEATURE ENGINEERING
 # ==========================================================
-
 def create_input_features(df):
-
     transformed = pd.DataFrame()
 
     transformed["Open_logret"] = np.log(
         df["Open"] / df["Open"].shift(1)
     )
-
     transformed["High_logret"] = np.log(
         df["High"] / df["High"].shift(1)
     )
-
     transformed["Low_logret"] = np.log(
         df["Low"] / df["Low"].shift(1)
     )
-
     transformed["Close_logret"] = np.log(
         df["Close"] / df["Close"].shift(1)
     )
-
     transformed["Volume_log"] = np.log1p(
         df["Volume"]
     )
@@ -66,19 +58,17 @@ def create_input_features(df):
     feat = []
 
     for lag in range(1, 4):
-
         row = transformed.shift(lag)
-
         feat.extend(
             row.iloc[-1].values.tolist()
         )
 
     return np.array(feat).reshape(1, -1)
 
+
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-
 menu = st.sidebar.radio(
     "Menu",
     [
@@ -90,7 +80,6 @@ menu = st.sidebar.radio(
 # ==========================================================
 # HALAMAN PREDIKSI
 # ==========================================================
-
 if menu == "Prediksi Harga":
 
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
@@ -105,9 +94,10 @@ if menu == "Prediksi Harga":
 
     data = []
 
+    # T-2
     st.subheader("Hari T-2")
-
     row1 = []
+
     for c in cols:
         row1.append(
             st.number_input(
@@ -120,9 +110,10 @@ if menu == "Prediksi Harga":
 
     data.append(row1)
 
+    # T-1
     st.subheader("Hari T-1")
-
     row2 = []
+
     for c in cols:
         row2.append(
             st.number_input(
@@ -135,9 +126,10 @@ if menu == "Prediksi Harga":
 
     data.append(row2)
 
+    # T
     st.subheader("Hari T")
-
     row3 = []
+
     for c in cols:
         row3.append(
             st.number_input(
@@ -158,15 +150,9 @@ if menu == "Prediksi Harga":
         )
 
         if (df == 0).any().any():
-
-            st.error(
-                "Semua nilai harus diisi."
-            )
-
+            st.error("Semua nilai harus diisi.")
         else:
-
             try:
-
                 X = create_input_features(df)
 
                 X_scaled = scaler.transform(X)
@@ -185,103 +171,44 @@ if menu == "Prediksi Harga":
                 st.success(
                     f"Prediksi Harga Close Besok : Rp {predicted_close:,.2f}"
                 )
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.metric(
-                        "Harga Close Hari Ini",
-                        f"Rp {close_today:,.2f}"
-                    )
-                
-                with col2:
-                    st.metric(
-                        "Prediksi Close Besok",
-                        f"Rp {predicted_close:,.2f}"
-                    )
-                
-                # ======================================================
-# FEATURE IMPORTANCE
-# ======================================================
 
-feature_names = []
+                st.metric(
+                    "Harga Close Hari Ini",
+                    f"Rp {close_today:,.2f}"
+                )
 
-for lag in range(1, 4):
+                st.metric(
+                    "Prediksi Close Besok",
+                    f"Rp {predicted_close:,.2f}"
+                )
 
-    feature_names.extend([
-        f"Open_lag{lag}",
-        f"High_lag{lag}",
-        f"Low_lag{lag}",
-        f"Close_lag{lag}",
-        f"Volume_lag{lag}"
-    ])
-
-importance_df = pd.DataFrame({
-    "Feature": feature_names,
-    "Importance": model.feature_importances_
-})
-
-importance_df = (
-    importance_df
-    .sort_values(
-        by="Importance",
-        ascending=False
-    )
-)
-
-st.markdown("---")
-st.subheader("📊 Feature Importance")
-
-fig, ax = plt.subplots(
-    figsize=(8, 5)
-)
-
-ax.barh(
-    importance_df["Feature"][:10],
-    importance_df["Importance"][:10]
-)
-
-ax.set_xlabel("Importance Score")
-ax.set_ylabel("Feature")
-ax.invert_yaxis()
-
-st.pyplot(fig)
-
-st.dataframe(
-    importance_df.head(10),
-    use_container_width=True
-)
+            except Exception as e:
+                st.error(str(e))
 
 # ==========================================================
 # PANDUAN
 # ==========================================================
-
 else:
 
     st.title("📖 Panduan Penggunaan")
 
-    st.markdown(
-        """
-        ### Langkah-langkah
+    st.markdown("""
+    ### Langkah-langkah
 
-        1. Pilih menu **Prediksi Harga**.
-        2. Masukkan data Open, High, Low, Close, dan Volume
-           untuk 3 hari terakhir.
-        3. Klik tombol **Prediksi Harga Besok**.
-        4. Sistem akan menampilkan prediksi harga penutupan.
-        5. Menu **Evaluasi Model** digunakan untuk melihat
-           performa model XGBoost.
+    1. Pilih menu **Prediksi Harga**.
+    2. Masukkan data Open, High, Low, Close, dan Volume untuk 3 hari terakhir.
+    3. Klik tombol **Prediksi Harga Besok**.
+    4. Sistem akan menampilkan prediksi harga penutupan.
+    5. Menu **Evaluasi Model** digunakan untuk melihat performa model XGBoost.
 
-        ### Keterangan
+    ### Keterangan
 
-        - T-2 = Dua hari sebelum hari ini
-        - T-1 = Satu hari sebelum hari ini
-        - T = Hari terakhir yang diketahui
+    - T-2 = Dua hari sebelum hari ini
+    - T-1 = Satu hari sebelum hari ini
+    - T = Hari terakhir yang diketahui
 
-        ### Catatan
+    ### Catatan
 
-        Prediksi ini hanya digunakan sebagai alat bantu
-        analisis dan tidak menjamin pergerakan harga saham
-        di masa mendatang.
-        """
-    )
+    Prediksi ini hanya digunakan sebagai alat bantu analisis dan tidak menjamin
+    pergerakan harga saham di masa mendatang.
+    """)
