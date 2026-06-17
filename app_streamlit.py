@@ -185,17 +185,72 @@ if menu == "Prediksi Harga":
                 st.success(
                     f"Prediksi Harga Close Besok : Rp {predicted_close:,.2f}"
                 )
-
-                st.metric(
-                    "Harga Close Hari Ini",
-                    f"Rp {close_today:,.2f}"
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.metric(
+                        "Harga Close Hari Ini",
+                        f"Rp {close_today:,.2f}"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Prediksi Close Besok",
+                        f"Rp {predicted_close:,.2f}"
+                    )
+                
+                # ======================================================
+                # FEATURE IMPORTANCE
+                # ======================================================
+                
+                feature_names = []
+                
+                for lag in range(1, 4):
+                
+                    feature_names.extend([
+                        f"Open_lag{lag}",
+                        f"High_lag{lag}",
+                        f"Low_lag{lag}",
+                        f"Close_lag{lag}",
+                        f"Volume_lag{lag}"
+                    ])
+                
+                importance_df = pd.DataFrame({
+                    "Feature": feature_names,
+                    "Importance": model.feature_importances_
+                })
+                
+                importance_df = (
+                    importance_df
+                    .sort_values(
+                        by="Importance",
+                        ascending=False
+                    )
                 )
-
-                st.metric(
-                    "Prediksi Close Besok",
-                    f"Rp {predicted_close:,.2f}"
+                
+                st.markdown("---")
+                st.subheader("📊 Feature Importance")
+                
+                fig, ax = plt.subplots(
+                    figsize=(8, 5)
                 )
-
+                
+                ax.barh(
+                    importance_df["Feature"][:10],
+                    importance_df["Importance"][:10]
+                )
+                
+                ax.set_xlabel("Importance Score")
+                ax.set_ylabel("Feature")
+                ax.invert_yaxis()
+                
+                st.pyplot(fig)
+                
+                st.dataframe(
+                    importance_df.head(10),
+                    use_container_width=True
+                )
             except Exception as e:
 
                 st.error(str(e))
