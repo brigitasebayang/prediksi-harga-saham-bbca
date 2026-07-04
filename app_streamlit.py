@@ -9,7 +9,6 @@ import matplotlib.pyplot as plt
 # ==========================================================
 # PAGE CONFIG
 # ==========================================================
-
 st.set_page_config(
     page_title="Prediksi Harga Saham BBCA",
     page_icon="📈",
@@ -19,10 +18,8 @@ st.set_page_config(
 # ==========================================================
 # LOAD MODEL
 # ==========================================================
-
 @st.cache_resource
 def load_model():
-
     model = xgb.XGBRegressor()
     model.load_model("xgboost_best_lb3.json")
 
@@ -33,32 +30,27 @@ def load_model():
 
     return model, scaler, results
 
+
 model, scaler, results = load_model()
 
 # ==========================================================
 # FEATURE ENGINEERING
 # ==========================================================
-
 def create_input_features(df):
-
     transformed = pd.DataFrame()
 
     transformed["Open_logret"] = np.log(
         df["Open"] / df["Open"].shift(1)
     )
-
     transformed["High_logret"] = np.log(
         df["High"] / df["High"].shift(1)
     )
-
     transformed["Low_logret"] = np.log(
         df["Low"] / df["Low"].shift(1)
     )
-
     transformed["Close_logret"] = np.log(
         df["Close"] / df["Close"].shift(1)
     )
-
     transformed["Volume_log"] = np.log1p(
         df["Volume"]
     )
@@ -66,24 +58,21 @@ def create_input_features(df):
     feat = []
 
     for lag in range(1, 4):
-
         row = transformed.shift(lag)
-
         feat.extend(
             row.iloc[-1].values.tolist()
         )
 
     return np.array(feat).reshape(1, -1)
 
+
 # ==========================================================
 # SIDEBAR
 # ==========================================================
-
 menu = st.sidebar.radio(
     "Menu",
     [
         "Prediksi Harga",
-        "Evaluasi Model",
         "Panduan Penggunaan"
     ]
 )
@@ -91,18 +80,9 @@ menu = st.sidebar.radio(
 # ==========================================================
 # HALAMAN PREDIKSI
 # ==========================================================
-
 if menu == "Prediksi Harga":
 
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
-
-    st.info(
-        """
-        Masukkan data OHLCV untuk 3 hari terakhir.
-        Sistem akan memprediksi harga penutupan (Close)
-        pada hari perdagangan berikutnya.
-        """
-    )
 
     cols = [
         "Open",
@@ -114,9 +94,10 @@ if menu == "Prediksi Harga":
 
     data = []
 
+    # T-2
     st.subheader("Hari T-2")
-
     row1 = []
+
     for c in cols:
         row1.append(
             st.number_input(
@@ -129,9 +110,10 @@ if menu == "Prediksi Harga":
 
     data.append(row1)
 
+    # T-1
     st.subheader("Hari T-1")
-
     row2 = []
+
     for c in cols:
         row2.append(
             st.number_input(
@@ -144,9 +126,10 @@ if menu == "Prediksi Harga":
 
     data.append(row2)
 
+    # T
     st.subheader("Hari T")
-
     row3 = []
+
     for c in cols:
         row3.append(
             st.number_input(
@@ -159,7 +142,7 @@ if menu == "Prediksi Harga":
 
     data.append(row3)
 
-    if st.button("🔮 Prediksi Harga Besok"):
+    if st.button("Prediksi Harga Besok"):
 
         df = pd.DataFrame(
             data,
@@ -167,15 +150,9 @@ if menu == "Prediksi Harga":
         )
 
         if (df == 0).any().any():
-
-            st.error(
-                "Semua nilai harus diisi."
-            )
-
+            st.error("Semua nilai harus diisi.")
         else:
-
             try:
-
                 X = create_input_features(df)
 
                 X_scaled = scaler.transform(X)
@@ -194,112 +171,130 @@ if menu == "Prediksi Harga":
                 st.success(
                     f"Prediksi Harga Close Besok : Rp {predicted_close:,.2f}"
                 )
-
-                st.metric(
-                    "Harga Close Hari Ini",
-                    f"Rp {close_today:,.2f}"
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.metric(
+                        "Harga Close Hari Ini",
+                        f"Rp {close_today:,.2f}"
+                    )
+                
+                with col2:
+                    st.metric(
+                        "Prediksi Close Besok",
+                        f"Rp {predicted_close:,.2f}"
+                    )
+                
+                # ======================================================
+                # FEATURE IMPORTANCE
+                # ======================================================
+                
+                feature_names = [
+                    "Open (1 Hari Lalu)",
+                    "High (1 Hari Lalu)",
+                    "Low (1 Hari Lalu)",
+                    "Close (1 Hari Lalu)",
+                    "Volume (1 Hari Lalu)",
+            
+                    "Open (2 Hari Lalu)",
+                    "High (2 Hari Lalu)",
+                    "Low (2 Hari Lalu)",
+                    "Close (2 Hari Lalu)",
+                    "Volume (2 Hari Lalu)",
+            
+                    "Open (3 Hari Lalu)",
+                    "High (3 Hari Lalu)",
+                    "Low (3 Hari Lalu)",
+                    "Close (3 Hari Lalu)",
+                    "Volume (3 Hari Lalu)"
+                ]
+            
+                importance = model.feature_importances_
+            
+                # menghindari mismatch jumlah fitur
+                feature_names = feature_names[:len(importance)]
+            
+                importance_df = pd.DataFrame({
+                    "Faktor": feature_names,
+                    "Tingkat Pengaruh": importance
+                })
+            
+                importance_df = importance_df.sort_values(
+                    by="Tingkat Pengaruh",
+                    ascending=False
                 )
-
-                st.metric(
-                    "Prediksi Close Besok",
-                    f"Rp {predicted_close:,.2f}"
+            
+                st.markdown("---")
+            
+                st.subheader(
+                    "📊 Faktor yang Mempengaruhi Prediksi"
                 )
-
+            
+                fig, ax = plt.subplots(
+                    figsize=(8, 5)
+                )
+            
+                ax.barh(
+                    importance_df["Faktor"].head(10),
+                    importance_df["Tingkat Pengaruh"].head(10)
+                )
+            
+                ax.set_xlabel("Tingkat Pengaruh")
+                ax.set_ylabel("Faktor")
+            
+                ax.invert_yaxis()
+            
+                st.pyplot(fig)
+            
+                st.markdown(
+                    """
+                    **Interpretasi Model**
+            
+                    Grafik di atas menunjukkan tingkat pengaruh
+                    masing-masing faktor terhadap prediksi yang
+                    dihasilkan oleh model XGBoost.
+                    Semakin besar nilainya, semakin besar pula
+                    kontribusinya dalam menghasilkan prediksi.
+                    """
+                )
+            
+                st.dataframe(
+                    importance_df.head(10),
+                    use_container_width=True
+                )
+            
+                st.info(
+                    f"Faktor yang paling berpengaruh adalah **{importance_df.iloc[0]['Faktor']}**."
+                )
+            
             except Exception as e:
-
                 st.error(str(e))
-
-# ==========================================================
-# HALAMAN EVALUASI
-# ==========================================================
-
-elif menu == "Evaluasi Model":
-
-    st.title("📊 Evaluasi Model XGBoost")
-
-    col1, col2, col3 = st.columns(3)
-
-    col1.metric(
-        "RMSE",
-        f"{results['RMSE']:.2f}"
-    )
-
-    col2.metric(
-        "MAE",
-        f"{results['MAE']:.2f}"
-    )
-
-    col3.metric(
-        "R²",
-        f"{results['R2']:.4f}"
-    )
-
-    st.markdown("---")
-
-    st.subheader("Informasi Model")
-
-    st.write(
-        f"Lookback Terbaik : {results['Best_Lookback']} Hari"
-    )
-
-    st.write(
-        "Algoritma : XGBoost"
-    )
-
-    st.write(
-        "Target : Harga Close Hari Berikutnya"
-    )
-
-    st.write(
-        "Fitur : Open, High, Low, Close, Volume"
-    )
-
-    st.markdown("---")
-
-    st.subheader("Interpretasi")
-
-    st.success(
-        f"""
-        Nilai R² sebesar {results['R2']:.4f}
-        menunjukkan model mampu menjelaskan sekitar
-        {results['R2']*100:.2f}% variasi data.
-
-        RMSE dan MAE yang rendah menunjukkan
-        model memiliki tingkat kesalahan prediksi
-        yang relatif kecil.
-        """
-    )
 
 # ==========================================================
 # PANDUAN
 # ==========================================================
-
 else:
 
     st.title("📖 Panduan Penggunaan")
 
-    st.markdown(
-        """
-        ### Langkah-langkah
+    st.markdown("""
+    ### Langkah-langkah
 
-        1. Pilih menu **Prediksi Harga**.
-        2. Masukkan data Open, High, Low, Close, dan Volume
-           untuk 3 hari terakhir.
-        3. Klik tombol **Prediksi Harga Besok**.
-        4. Sistem akan menampilkan prediksi harga penutupan.
-        5. Menu **Evaluasi Model** digunakan untuk melihat
-           performa model XGBoost.
+    1. Pilih menu **Prediksi Harga**.
+    2. Masukkan data Open, High, Low, Close, dan Volume untuk 3 hari terakhir.
+    3. Klik tombol **Prediksi Harga Besok**.
+    4. Sistem akan menampilkan prediksi harga penutupan.
+    5. Menu **Evaluasi Model** digunakan untuk melihat performa model XGBoost.
 
-        ### Keterangan
+    ### Keterangan
 
-        - T-2 = Dua hari sebelum hari ini
-        - T-1 = Satu hari sebelum hari ini
-        - T = Hari terakhir yang diketahui
+    - T-2 = Dua hari sebelum hari ini
+    - T-1 = Satu hari sebelum hari ini
+    - T = Hari terakhir yang diketahui
 
-        ### Catatan
+    ### Catatan
 
-        Prediksi ini hanya digunakan sebagai alat bantu
-        analisis dan tidak menjamin pergerakan harga saham
-        di masa mendatang.
-        """
-    )
+    Prediksi ini hanya digunakan sebagai alat bantu analisis dan tidak menjamin
+    pergerakan harga saham di masa mendatang.
+    """)
