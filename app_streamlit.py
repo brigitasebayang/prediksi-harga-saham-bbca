@@ -21,10 +21,10 @@ st.set_page_config(
 @st.cache_resource
 def load_model():
     model = xgb.XGBRegressor()
-    model.load_model("xgboost_best_lb3.json")
+    model.load_model("preprocessor.pkl")
 
     # Nama file scaler sesuai output notebook: xgboost_scaler.pkl
-    scaler = joblib.load("xgboost_scaler.pkl")
+    scaler = joblib.load("preprocessor.pkl")
 
     with open("xgboost_summary_lb3.json", "r") as f:
         results = json.load(f)
