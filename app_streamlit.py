@@ -93,7 +93,7 @@ def fit_scaler_from_input(X_raw: np.ndarray) -> np.ndarray:
 
 menu = st.sidebar.radio(
     "Menu",
-    ["Prediksi Harga", "Evaluasi Model", "Panduan Penggunaan"]
+    ["Prediksi Harga", "Evaluasi Model", "Feature Importance", "Panduan Penggunaan"]
 )
 
 # ==========================================================
@@ -309,6 +309,186 @@ elif menu == "Evaluasi Model":
         f"RMSE sebesar **Rp {test_m['rmse']:.2f}** mengindikasikan rata-rata deviasi "
         f"prediksi dari harga aktual sebesar nilai tersebut dalam satuan Rupiah."
     )
+
+# ==========================================================
+# HALAMAN FEATURE IMPORTANCE
+# ==========================================================
+
+elif menu == "Feature Importance":
+
+    st.title("🔍 Feature Importance — XGBoost")
+    st.markdown(
+        """
+        Grafik berikut menampilkan seberapa besar kontribusi setiap fitur input
+        terhadap keputusan prediksi model XGBoost, diukur menggunakan **gain importance**
+        (rata-rata penurunan loss yang disumbangkan setiap kali fitur tersebut digunakan
+        untuk memisahkan data di dalam pohon keputusan).
+        """
+    )
+
+    # Ambil importance langsung dari model yang sudah di-load
+    importances   = model.feature_importances_
+    feat_imp_df   = pd.DataFrame({
+        "Fitur"      : FEATURE_NAMES,
+        "Importance" : importances
+    }).sort_values("Importance", ascending=False).reset_index(drop=True)
+    feat_imp_df.index += 1
+
+    top_n = st.slider("Tampilkan Top-N Fitur", min_value=5, max_value=len(FEATURE_NAMES), value=15, step=1)
+
+    top_df = feat_imp_df.head(top_n)
+
+    # ── Grafik horizontal bar ──
+    fig, ax = plt.subplots(figsize=(10, top_n * 0.42 + 1.5))
+
+    colors = []
+    for feat in top_df["Fitur"]:
+        if "Close" in feat:
+            colors.append("#2196F3")   # biru
+        elif "Volume" in feat:
+            colors.append("#9C27B0")   # ungu
+        elif "High" in feat:
+            colors.append("#4CAF50")   # hijau
+        elif "Low" in feat:
+            colors.append("#FF9800")   # oranye
+        else:
+            colors.append("#F44336")   # merah (Open)
+
+    bars = ax.barh(
+        top_df["Fitur"].values[::-1],
+        top_df["Importance"].values[::-1],
+        color=colors[::-1],
+        edgecolor="white",
+        height=0.7
+    )
+
+    # Label nilai di ujung bar
+    for bar, val in zip(bars, top_df["Importance"].values[::-1]):
+        ax.text(
+            bar.get_width() + max(top_df["Importance"]) * 0.01,
+            bar.get_y() + bar.get_height() / 2,
+            f"{val:.4f}",
+            va="center", ha="left", fontsize=9
+        )
+
+    ax.set_title(
+        f"Top-{top_n} Feature Importance — XGBoost (Lookback={BEST_LOOKBACK} hari)",
+        fontsize=13, fontweight="bold", pad=12
+    )
+    ax.set_xlabel("Importance Score (Gain)", fontsize=11)
+    ax.set_xlim(0, max(top_df["Importance"]) * 1.18)
+    ax.grid(axis="x", alpha=0.3)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    plt.tight_layout()
+    st.pyplot(fig)
+
+    # ── Legenda warna ──
+    st.markdown(
+        """
+        **Keterangan warna:**
+        🔵 Close &nbsp;|&nbsp; 🟠 Low &nbsp;|&nbsp; 🟢 High &nbsp;|&nbsp;
+        🔴 Open &nbsp;|&nbsp; 🟣 Volume
+        """
+    )
+
+    st.markdown("---")
+
+    # ── Tabel lengkap ──
+    col_tbl, col_summary = st.columns([3, 2])
+
+    with col_tbl:
+        st.subheader("Tabel Semua Fitur")
+        st.dataframe(
+            feat_imp_df.rename(columns={"Fitur": "Nama Fitur", "Importance": "Importance Score"}),
+            use_container_width=True
+        )
+
+    with col_summary:
+        st.subheader("Ringkasan per Kelompok Fitur")
+
+        # Kelompokkan berdasarkan kolom asal (Open/High/Low/Close/Volume)
+        def get_group(name):
+            for col in ["Close", "High", "Low", "Open", "Volume"]:
+                if col in name:
+                    return col
+            return "Lainnya"
+
+        feat_imp_df["Kelompok"] = feat_imp_df["Fitur"].apply(get_group)
+        group_df = (
+            feat_imp_df.groupby("Kelompok")["Importance"]
+            .sum()
+            .sort_values(ascending=False)
+            .reset_index()
+        )
+        group_df.columns = ["Kelompok Fitur", "Total Importance"]
+        group_df["Persentase (%)"] = (group_df["Total Importance"] / group_df["Total Importance"].sum() * 100).round(2)
+
+        st.dataframe(group_df, use_container_width=True, hide_index=True)
+
+        # Pie chart kontribusi per kelompok
+        fig2, ax2 = plt.subplots(figsize=(5, 5))
+        pie_colors = {"Close": "#2196F3", "High": "#4CAF50", "Low": "#FF9800",
+                      "Open": "#F44336", "Volume": "#9C27B0"}
+        pie_c = [pie_colors.get(k, "#607D8B") for k in group_df["Kelompok Fitur"]]
+        ax2.pie(
+            group_df["Total Importance"],
+            labels=group_df["Kelompok Fitur"],
+            autopct="%1.1f%%",
+            colors=pie_c,
+            startangle=90,
+            pctdistance=0.82,
+            wedgeprops=dict(edgecolor="white", linewidth=1.5)
+        )
+        ax2.set_title("Kontribusi per Kelompok Fitur", fontweight="bold")
+        plt.tight_layout()
+        st.pyplot(fig2)
+
+    st.markdown("---")
+
+    # ── Analisis per Lag ──
+    st.subheader("Kontribusi per Lag")
+    st.markdown(
+        "Perbandingan total importance berdasarkan jarak lag — menunjukkan "
+        "seberapa jauh ke belakang informasi yang paling berguna bagi model."
+    )
+
+    def get_lag(name):
+        for lag in range(1, BEST_LOOKBACK + 1):
+            if f"_lag{lag}" in name:
+                return f"Lag {lag}"
+        return "Lainnya"
+
+    feat_imp_df["Lag"] = feat_imp_df["Fitur"].apply(get_lag)
+    lag_df = (
+        feat_imp_df.groupby("Lag")["Importance"]
+        .sum()
+        .sort_index()
+        .reset_index()
+    )
+    lag_df.columns = ["Lag", "Total Importance"]
+    lag_df["Persentase (%)"] = (lag_df["Total Importance"] / lag_df["Total Importance"].sum() * 100).round(2)
+
+    fig3, ax3 = plt.subplots(figsize=(6, 3))
+    lag_colors = ["#1565C0", "#42A5F5", "#90CAF9"][:len(lag_df)]
+    bars3 = ax3.bar(lag_df["Lag"], lag_df["Total Importance"], color=lag_colors, edgecolor="white", width=0.5)
+    for bar, pct in zip(bars3, lag_df["Persentase (%)"]):
+        ax3.text(
+            bar.get_x() + bar.get_width() / 2,
+            bar.get_height() + max(lag_df["Total Importance"]) * 0.01,
+            f"{pct:.1f}%", ha="center", va="bottom", fontsize=10, fontweight="bold"
+        )
+    ax3.set_title("Total Importance per Lag", fontweight="bold")
+    ax3.set_xlabel("Lag")
+    ax3.set_ylabel("Total Importance")
+    ax3.grid(axis="y", alpha=0.3)
+    ax3.spines["top"].set_visible(False)
+    ax3.spines["right"].set_visible(False)
+    plt.tight_layout()
+    st.pyplot(fig3)
+
+    st.dataframe(lag_df, use_container_width=True, hide_index=True)
 
 # ==========================================================
 # PANDUAN PENGGUNAAN
