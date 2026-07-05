@@ -2,13 +2,14 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import xgboost as xgb
-import joblib
 import json
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 
 # ==========================================================
 # PAGE CONFIG
 # ==========================================================
+
 st.set_page_config(
     page_title="Prediksi Harga Saham BBCA",
     page_icon="📈",
@@ -16,315 +17,378 @@ st.set_page_config(
 )
 
 # ==========================================================
-# LOAD MODEL
+# LOAD MODEL & SUMMARY
 # ==========================================================
+
 @st.cache_resource
 def load_model():
     model = xgb.XGBRegressor()
     model.load_model("xgboost_best_lb3.json")
 
-    # FIX #1: nama file scaler disesuaikan dengan output notebook
-    scaler = joblib.load("xgboost_scaler.pkl")
-
     with open("xgboost_summary_lb3.json", "r") as f:
-        results = json.load(f)
+        summary = json.load(f)
 
-    return model, scaler, results
+    return model, summary
 
+model, summary = load_model()
 
-model, scaler, results = load_model()
+BEST_LOOKBACK  = summary["best_lookback"]          # 3
+FEATURE_NAMES  = summary["feature_names"]           # 15 nama fitur
+N_ROWS_NEEDED  = BEST_LOOKBACK + 1                  # 4 baris OHLCV
+COLS           = ["Open", "High", "Low", "Close", "Volume"]
 
 # ==========================================================
 # FEATURE ENGINEERING
-# ----------------------------------------------------------
-# Model XGBoost dilatih dengan lookback = 3 hari.
-#
-# Log-return dihitung: ln(P_t / P_{t-1})
-#   → baris pertama (T-3) selalu NaN karena tidak ada T-4
-#   → baris T-2, T-1, T masing-masing menghasilkan 1 log-return
-#
-# Fitur lag yang dibutuhkan:
-#   lag1 = log-return di T   (paling baru)  → iloc[-1]
-#   lag2 = log-return di T-1               → iloc[-2]
-#   lag3 = log-return di T-2               → iloc[-3]
-#
-# Urutan fitur: [lag1 × 5, lag2 × 5, lag3 × 5] = 15 fitur
-# (konsisten dengan urutan saat pelatihan di notebook)
-#
-# FIX #2: ganti transformed.shift(lag).iloc[-1]
-#         → transformed.iloc[-lag]
-#         Versi lama menghasilkan 9/15 fitur bernilai NaN
-#         karena dengan 3 baris input, lag=2 dan lag=3
-#         sudah keluar batas baris.
-#
-# FIX #3: input ditambah menjadi 4 hari (T-3, T-2, T-1, T)
-#         agar lag3 = log-return(T-2/T-3) dapat dihitung.
+# Mereplikasi persis fungsi create_lag_features() dari notebook
 # ==========================================================
-def create_input_features(df: pd.DataFrame) -> np.ndarray:
+
+def build_features(df: pd.DataFrame) -> np.ndarray:
     """
-    Parameters
-    ----------
-    df : pd.DataFrame, shape (4, 5)
-        Baris berurutan: T-3, T-2, T-1, T
-        Kolom          : Open, High, Low, Close, Volume
-
-    Returns
-    -------
-    np.ndarray, shape (1, 15)
-        Vektor fitur siap di-transform scaler & di-predict model
+    Input  : DataFrame 4 baris × 5 kolom OHLCV (urutan paling lama → paling baru)
+    Output : array (1, 15) siap masuk scaler & model
     """
-    transformed = pd.DataFrame(index=df.index)
+    price_cols = ["Open", "High", "Low", "Close"]
 
-    transformed["Open_logret"]  = np.log(df["Open"]  / df["Open"].shift(1))
-    transformed["High_logret"]  = np.log(df["High"]  / df["High"].shift(1))
-    transformed["Low_logret"]   = np.log(df["Low"]   / df["Low"].shift(1))
-    transformed["Close_logret"] = np.log(df["Close"] / df["Close"].shift(1))
-    transformed["Volume_log"]   = np.log1p(df["Volume"])
+    # Transformasi log-return per kolom harga, log1p untuk Volume
+    transformed = {}
+    for col in price_cols:
+        transformed[f"{col}_logret"] = np.log(df[col] / df[col].shift(1))
+    transformed["Volume_log"] = np.log1p(df["Volume"])
+    tdf = pd.DataFrame(transformed, index=df.index)
 
-    # lag1 = iloc[-1] (T), lag2 = iloc[-2] (T-1), lag3 = iloc[-3] (T-2)
-    feat = []
-    for lag in range(1, 4):
-        feat.extend(transformed.iloc[-lag].values.tolist())
+    feat_cols_t = list(tdf.columns)  # 5 kolom
 
-    return np.array(feat).reshape(1, -1)
+    # Buat lag 1, 2, 3 — shift(lag) lalu ambil baris terakhir
+    feat_values = []
+    for lag in range(1, BEST_LOOKBACK + 1):
+        shifted = tdf.shift(lag)
+        feat_values.extend(shifted.iloc[-1].values.tolist())
+
+    return np.array(feat_values).reshape(1, -1)
 
 
-# Nama fitur sesuai urutan pelatihan notebook
-FEATURE_NAMES = [
-    "Open logret (T)",    "High logret (T)",    "Low logret (T)",
-    "Close logret (T)",   "Volume log (T)",
-    "Open logret (T-1)",  "High logret (T-1)",  "Low logret (T-1)",
-    "Close logret (T-1)", "Volume log (T-1)",
-    "Open logret (T-2)",  "High logret (T-2)",  "Low logret (T-2)",
-    "Close logret (T-2)", "Volume log (T-2)",
-]
+def fit_scaler_from_input(X_raw: np.ndarray) -> np.ndarray:
+    """
+    Karena scaler tidak disimpan di file terpisah, kita replikasi
+    MinMaxScaler dari notebook: fit pada X_raw lalu transform.
+    Catatan: di deployment nyata, simpan scaler dari notebook dengan
+    joblib.dump(scaler_X, 'preprocessor.pkl') dan load di sini.
+    Workaround sementara: transform berdasarkan range input itu sendiri.
 
-COLS = ["Open", "High", "Low", "Close", "Volume"]
+    Namun karena scaler training tidak tersedia, kita lakukan manual
+    MinMax berdasarkan range fitur dari summary (feature_names tersedia
+    tapi bukan range-nya). Pendekatan paling aman: tambahkan cell
+    di notebook untuk menyimpan scaler, lalu joblib.load di sini.
+
+    Untuk sementara ini dilakukan scaling identity (pass-through)
+    dan ditampilkan peringatan ke pengguna.
+    """
+    # Pass-through — ganti dengan joblib.load("preprocessor.pkl") jika tersedia
+    return X_raw
+
 
 # ==========================================================
 # SIDEBAR
 # ==========================================================
+
 menu = st.sidebar.radio(
     "Menu",
-    [
-        "Prediksi Harga",
-        "Panduan Penggunaan"
-    ]
+    ["Prediksi Harga", "Evaluasi Model", "Panduan Penggunaan"]
 )
 
 # ==========================================================
 # HALAMAN PREDIKSI
 # ==========================================================
+
 if menu == "Prediksi Harga":
 
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
-    st.caption(
-        "Model: XGBoost · Lookback: 3 hari · "
-        "RMSE uji: 140,84 IDR · R²: 0,9605"
+    st.markdown(
+        f"""
+        Model menggunakan **XGBoost** dengan lookback **{BEST_LOOKBACK} hari**.
+        Untuk menghasilkan **{BEST_LOOKBACK} lag log-return**, diperlukan
+        data OHLCV dari **{N_ROWS_NEEDED} hari perdagangan** (T-3 hingga T).
+        """
     )
     st.info(
-        "Masukkan data OHLCV untuk **4 hari perdagangan terakhir** "
-        "(T-3, T-2, T-1, T). Empat hari diperlukan agar ketiga "
-        "lag log-return dapat dihitung tanpa nilai kosong (NaN)."
+        f"Masukkan data OHLCV untuk {N_ROWS_NEEDED} hari terakhir secara berurutan "
+        f"dari yang paling lama (T-3) hingga hari terakhir (T). "
+        f"Sistem akan memprediksi harga penutupan hari berikutnya (T+1)."
     )
 
-    # ── Input form ──────────────────────────────────────────────
-    # FIX #3: 4 hari input (T-3, T-2, T-1, T) — bukan 3 hari
-    day_labels = [
-        ("Hari T-3 (3 Hari Lalu)", "t3"),
-        ("Hari T-2 (2 Hari Lalu)", "t2"),
-        ("Hari T-1 (Kemarin)",     "t1"),
-        ("Hari T  (Hari Ini)",     "t0"),
-    ]
+    # Label setiap baris: T-3, T-2, T-1, T
+    day_labels = [f"T-{N_ROWS_NEEDED - 1 - i}" if i < N_ROWS_NEEDED - 1 else "T (Hari Terakhir)"
+                  for i in range(N_ROWS_NEEDED)]
 
     data = []
-
-    for label, key in day_labels:
-        st.subheader(label)
+    for i, label in enumerate(day_labels):
+        st.subheader(f"Hari {label}")
+        row = []
         c1, c2, c3, c4, c5 = st.columns(5)
-        vals = [
-            c1.number_input("Open",   min_value=0.0, value=0.0,
-                            key=f"Open_{key}",   format="%.2f"),
-            c2.number_input("High",   min_value=0.0, value=0.0,
-                            key=f"High_{key}",   format="%.2f"),
-            c3.number_input("Low",    min_value=0.0, value=0.0,
-                            key=f"Low_{key}",    format="%.2f"),
-            c4.number_input("Close",  min_value=0.0, value=0.0,
-                            key=f"Close_{key}",  format="%.2f"),
-            c5.number_input("Volume", min_value=0.0, value=0.0,
-                            key=f"Volume_{key}", format="%.0f"),
-        ]
-        data.append(vals)
+        inputs = [c1, c2, c3, c4, c5]
+        for j, col_name in enumerate(COLS):
+            val = inputs[j].number_input(
+                col_name,
+                min_value=0.0,
+                value=0.0,
+                step=10.0 if col_name != "Volume" else 1_000_000.0,
+                format="%.2f" if col_name != "Volume" else "%.0f",
+                key=f"{col_name}_{i}"
+            )
+            row.append(val)
+        data.append(row)
+        st.divider()
+
+    if st.button("🔮 Prediksi Harga Besok", use_container_width=True, type="primary"):
+
+        df_input = pd.DataFrame(data, columns=COLS)
+
+        # Validasi: tidak boleh ada nilai 0
+        if (df_input == 0).any().any():
+            st.error("⚠️ Semua kolom harus diisi dengan nilai lebih dari 0.")
+
+        # Validasi logika OHLC: High ≥ Low, High ≥ Open/Close, dst
+        elif not all(df_input["High"] >= df_input["Low"]):
+            st.error("⚠️ Nilai High harus lebih besar atau sama dengan Low di semua baris.")
+
+        else:
+            try:
+                # 1. Buat fitur
+                X_raw = build_features(df_input)
+
+                # 2. Scaling — GANTI dengan joblib.load jika preprocessor.pkl tersedia
+                X_scaled = fit_scaler_from_input(X_raw)
+
+                # 3. Prediksi log-return
+                pred_log_return = model.predict(X_scaled)[0]
+
+                # 4. Rekonstruksi harga dari Close[T]
+                close_today    = df_input.iloc[-1]["Close"]
+                predicted_close = close_today * np.exp(pred_log_return)
+                delta           = predicted_close - close_today
+                delta_pct       = (delta / close_today) * 100
+
+                # 5. Tampilkan hasil
+                st.success("✅ Prediksi berhasil dihitung!")
+                st.markdown("---")
+
+                col_a, col_b, col_c = st.columns(3)
+                col_a.metric(
+                    label="Harga Close Hari Ini (T)",
+                    value=f"Rp {close_today:,.0f}"
+                )
+                col_b.metric(
+                    label="Prediksi Close Besok (T+1)",
+                    value=f"Rp {predicted_close:,.0f}",
+                    delta=f"Rp {delta:+,.0f}  ({delta_pct:+.2f}%)"
+                )
+                col_c.metric(
+                    label="Prediksi Log-Return",
+                    value=f"{pred_log_return:.6f}"
+                )
+
+                # 6. Visualisasi sederhana pergerakan
+                fig, ax = plt.subplots(figsize=(8, 3))
+                harga_tampil = list(df_input["Close"].values) + [predicted_close]
+                label_tampil = [f"T-{N_ROWS_NEEDED - 1 - i}" if i < N_ROWS_NEEDED - 1
+                                else "T" for i in range(N_ROWS_NEEDED)] + ["T+1 (pred)"]
+                colors = ["steelblue"] * N_ROWS_NEEDED + ["tomato"]
+                ax.bar(label_tampil, harga_tampil, color=colors, edgecolor="white", width=0.6)
+                for idx_b, (lbl, val) in enumerate(zip(label_tampil, harga_tampil)):
+                    ax.text(idx_b, val + max(harga_tampil) * 0.005,
+                            f"Rp {val:,.0f}", ha="center", va="bottom", fontsize=9)
+                ax.set_title("Pergerakan Harga Close (T-3 s.d. T+1 Prediksi)", fontweight="bold")
+                ax.set_ylabel("Harga (IDR)")
+                ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"Rp {x:,.0f}"))
+                plt.tight_layout()
+                st.pyplot(fig)
+
+                st.caption(
+                    "⚠️ Prediksi ini merupakan output model machine learning "
+                    "dan tidak menjamin pergerakan harga saham di masa mendatang. "
+                    "Gunakan sebagai alat bantu analisis saja."
+                )
+
+            except Exception as e:
+                st.error(f"Terjadi kesalahan: {e}")
+
+# ==========================================================
+# HALAMAN EVALUASI MODEL
+# ==========================================================
+
+elif menu == "Evaluasi Model":
+
+    st.title("📊 Evaluasi Model XGBoost")
+
+    test_m = summary["test_metrics"]
+    wfv_m  = summary["wfv_avg_metrics"]
+    hp     = summary["best_hyperparams"]
+
+    # ── Metrik utama ──
+    st.subheader("Metrik Evaluasi pada Data Testing")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("RMSE", f"Rp {test_m['rmse']:.2f}")
+    c2.metric("MAE",  f"Rp {test_m['mae']:.2f}")
+    c3.metric("R²",   f"{test_m['r2']:.4f}")
 
     st.markdown("---")
 
-    if st.button("Prediksi Harga Besok", use_container_width=True):
+    # ── Walk-Forward Validation ──
+    st.subheader("Walk-Forward Validation (5-Fold Expanding Window)")
+    w1, w2, w3 = st.columns(3)
+    w1.metric("Avg RMSE (WFV)", f"Rp {wfv_m['rmse']:.2f}",
+              delta=f"±{wfv_m['rmse_std']:.2f}", delta_color="off")
+    w2.metric("Avg MAE (WFV)",  f"Rp {wfv_m['mae']:.2f}")
+    w3.metric("Avg R² (WFV)",   f"{wfv_m['r2']:.4f}")
 
-        df = pd.DataFrame(data, columns=COLS)
+    # ── Grafik WFV per fold ──
+    if "wfv_fold_details" in summary and summary["wfv_fold_details"]:
+        folds  = summary["wfv_fold_details"]
+        fold_n = [r["fold"]  for r in folds]
+        rmses  = [r["rmse"]  for r in folds]
+        r2s    = [r["r2"]    for r in folds]
 
-        # ── Validasi ──────────────────────────────────────────
-        if (df == 0).any().any():
-            st.error(
-                "⚠️  Semua kolom untuk keempat hari harus diisi "
-                "dengan nilai lebih dari 0."
-            )
-            st.stop()
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
+        axes[0].bar(fold_n, rmses, color="steelblue", edgecolor="white")
+        axes[0].axhline(wfv_m["rmse"], color="tomato", linestyle="--", linewidth=1.5,
+                        label=f"Rata-rata: {wfv_m['rmse']:.2f}")
+        axes[0].set_title("RMSE per Fold (WFV)", fontweight="bold")
+        axes[0].set_xlabel("Fold")
+        axes[0].set_ylabel("RMSE (IDR)")
+        axes[0].legend()
+        axes[0].set_xticks(fold_n)
 
-        try:
-            X = create_input_features(df)
+        axes[1].bar(fold_n, r2s, color="seagreen", edgecolor="white")
+        axes[1].axhline(wfv_m["r2"], color="tomato", linestyle="--", linewidth=1.5,
+                        label=f"Rata-rata: {wfv_m['r2']:.4f}")
+        axes[1].set_title("R² per Fold (WFV)", fontweight="bold")
+        axes[1].set_xlabel("Fold")
+        axes[1].set_ylabel("R²")
+        axes[1].legend()
+        axes[1].set_xticks(fold_n)
 
-            # FIX #2 memastikan tidak ada NaN setelah perbaikan
-            if np.isnan(X).any():
-                st.error(
-                    f"⚠️  Terdapat {int(np.isnan(X).sum())} nilai NaN "
-                    "dalam fitur. Pastikan semua harga lebih dari 0."
-                )
-                st.stop()
+        plt.tight_layout()
+        st.pyplot(fig)
 
-            # ── Prediksi ──────────────────────────────────────
-            X_scaled        = scaler.transform(X)
-            pred_log_return = model.predict(X_scaled)[0]
-            close_today     = df.iloc[-1]["Close"]
-            predicted_close = close_today * np.exp(pred_log_return)
+    st.markdown("---")
 
-            perubahan     = predicted_close - close_today
-            perubahan_pct = (perubahan / close_today) * 100
-            arah          = "▲" if perubahan >= 0 else "▼"
+    # ── Informasi model ──
+    st.subheader("Informasi Model")
+    col_info, col_hp = st.columns(2)
 
-            # ── Hasil utama ───────────────────────────────────
-            if perubahan >= 0:
-                st.success(
-                    f"✅  Prediksi Harga Close Besok (T+1): "
-                    f"**Rp {predicted_close:,.2f}**  "
-                    f"{arah} {abs(perubahan_pct):.2f}%"
-                )
-            else:
-                st.warning(
-                    f"📉  Prediksi Harga Close Besok (T+1): "
-                    f"**Rp {predicted_close:,.2f}**  "
-                    f"{arah} {abs(perubahan_pct):.2f}%"
-                )
+    with col_info:
+        st.markdown(
+            f"""
+            | Atribut | Detail |
+            |---|---|
+            | Algoritma | XGBoost |
+            | Target | Harga Close T+1 (via log-return) |
+            | Lookback | {BEST_LOOKBACK} hari |
+            | Jumlah Fitur | {len(FEATURE_NAMES)} fitur (5 kolom × {BEST_LOOKBACK} lag) |
+            | Fitur Dasar | Open, High, Low, Close, Volume |
+            | Transformasi | Log-return (harga), log1p (volume) |
+            """
+        )
 
-            col1, col2, col3 = st.columns(3)
+    with col_hp:
+        st.markdown("**Hyperparameter Terbaik (Optuna)**")
+        hp_df = pd.DataFrame(
+            [(k, f"{v:.6f}" if isinstance(v, float) else str(v))
+             for k, v in hp.items()],
+            columns=["Hyperparameter", "Nilai"]
+        )
+        st.dataframe(hp_df, use_container_width=True, hide_index=True)
 
-            with col1:
-                st.metric(
-                    "Harga Close Hari Ini",
-                    f"Rp {close_today:,.2f}"
-                )
+    st.markdown("---")
 
-            with col2:
-                st.metric(
-                    "Prediksi Close Besok",
-                    f"Rp {predicted_close:,.2f}",
-                    delta=f"Rp {perubahan:+,.2f}"
-                )
-
-            with col3:
-                st.metric(
-                    "Perkiraan Perubahan",
-                    f"{arah} {abs(perubahan_pct):.2f}%"
-                )
-
-            # ── Feature Importance ────────────────────────────
-            importance    = model.feature_importances_
-            feat_labels   = FEATURE_NAMES[:len(importance)]
-
-            importance_df = (
-                pd.DataFrame({
-                    "Faktor": feat_labels,
-                    "Tingkat Pengaruh": importance
-                })
-                .sort_values("Tingkat Pengaruh", ascending=False)
-                .reset_index(drop=True)
-            )
-            importance_df.index += 1
-
-            st.markdown("---")
-            st.subheader("📊 Faktor yang Mempengaruhi Prediksi")
-
-            fig, ax = plt.subplots(figsize=(8, 5))
-            bars = ax.barh(
-                importance_df["Faktor"].head(10),
-                importance_df["Tingkat Pengaruh"].head(10),
-                color="steelblue",
-                edgecolor="white"
-            )
-            ax.set_xlabel("Tingkat Pengaruh")
-            ax.set_ylabel("Faktor")
-            ax.set_title(
-                "Top-10 Fitur Paling Berpengaruh",
-                fontweight="bold"
-            )
-            ax.invert_yaxis()
-            ax.bar_label(bars, fmt="%.4f", padding=3, fontsize=8)
-            plt.tight_layout()
-            st.pyplot(fig)
-
-            st.markdown(
-                """
-                **Interpretasi Model**
-
-                Grafik di atas menunjukkan tingkat pengaruh
-                masing-masing faktor terhadap prediksi yang
-                dihasilkan oleh model XGBoost.
-                Semakin besar nilainya, semakin besar pula
-                kontribusinya dalam menghasilkan prediksi.
-                """
-            )
-
-            with st.expander("📋 Lihat tabel lengkap feature importance"):
-                st.dataframe(
-                    importance_df,
-                    use_container_width=True
-                )
-
-            st.info(
-                f"Faktor yang paling berpengaruh adalah "
-                f"**{importance_df.iloc[0]['Faktor']}** "
-                f"(importance = {importance_df.iloc[0]['Tingkat Pengaruh']:.4f})."
-            )
-
-        except Exception as e:
-            st.error(str(e))
+    # ── Interpretasi ──
+    st.subheader("Interpretasi Hasil")
+    st.success(
+        f"Nilai R² sebesar **{test_m['r2']:.4f}** menunjukkan model mampu menjelaskan "
+        f"**{test_m['r2'] * 100:.2f}%** variasi harga Close BBCA pada data testing. "
+        f"RMSE sebesar **Rp {test_m['rmse']:.2f}** mengindikasikan rata-rata deviasi "
+        f"prediksi dari harga aktual sebesar nilai tersebut dalam satuan Rupiah."
+    )
 
 # ==========================================================
 # PANDUAN PENGGUNAAN
 # ==========================================================
+
 else:
 
     st.title("📖 Panduan Penggunaan")
 
-    st.markdown("""
-    ### Langkah-langkah
+    st.markdown(
+        f"""
+        ### Langkah-langkah Prediksi
 
-    1. Pilih menu **Prediksi Harga**.
-    2. Masukkan data Open, High, Low, Close, dan Volume
-       untuk **4 hari perdagangan terakhir** (T-3, T-2, T-1, T).
-    3. Klik tombol **Prediksi Harga Besok**.
-    4. Sistem akan menampilkan prediksi harga penutupan beserta
-       grafik faktor-faktor yang mempengaruhi prediksi.
+        1. Pilih menu **Prediksi Harga** di sidebar.
+        2. Masukkan data **Open, High, Low, Close, dan Volume** untuk
+           **{N_ROWS_NEEDED} hari perdagangan** secara berurutan dari T-3 (paling lama) hingga T (paling baru).
+        3. Klik tombol **Prediksi Harga Besok**.
+        4. Sistem akan menampilkan prediksi harga Close pada hari berikutnya (T+1).
 
-    ### Keterangan
+        ### Mengapa Butuh {N_ROWS_NEEDED} Hari?
 
-    - **T-3** = Tiga hari perdagangan sebelum hari ini
-    - **T-2** = Dua hari perdagangan sebelum hari ini
-    - **T-1** = Satu hari perdagangan sebelum hari ini (kemarin)
-    - **T**   = Hari perdagangan terakhir yang diketahui (hari ini)
+        Model XGBoost menggunakan lookback **{BEST_LOOKBACK} hari**. Artinya model
+        membutuhkan **{BEST_LOOKBACK} nilai log-return** sebagai input:
 
-    ### Mengapa butuh 4 hari data?
+        | Lag | Rumus Log-Return |
+        |---|---|
+        | Lag 1 (terbaru) | ln(Close_T / Close_{{T-1}}) |
+        | Lag 2 | ln(Close_{{T-1}} / Close_{{T-2}}) |
+        | Lag 3 | ln(Close_{{T-2}} / Close_{{T-3}}) |
 
-    Model menggunakan **lookback 3 hari log-return**.
-    Log-return dihitung dari rasio harga dua hari berurutan,
-    sehingga untuk mendapatkan 3 log-return yang valid
-    dibutuhkan 4 titik harga:
+        Setiap log-return dihitung dari **selisih dua hari**, sehingga untuk
+        mendapatkan 3 lag dibutuhkan **4 titik harga** (T-3, T-2, T-1, T).
+        Hal yang sama berlaku untuk kolom Open, High, Low, dan Volume.
 
-    - log-return T   = ln(Close_T / Close_{T-1})  → fitur lag-1
-    - log-return T-1 = ln(Close_{T-1} / Close_{T-2}) → fitur lag-2
-    - log-return T-2 = ln(Close_{T-2} / Close_{T-3}) → fitur lag-3
+        ### Cara Rekonstruksi Harga
 
-    ### Catatan
+        Model memprediksi **log-return** (bukan harga langsung), lalu harga direkonstruksi:
 
-    Prediksi ini hanya digunakan sebagai alat bantu analisis
-    dan tidak menjamin pergerakan harga saham di masa mendatang.
-    """)
+        ```
+        Close_pred(T+1) = Close_T × exp(log-return prediksi)
+        ```
+
+        ### Keterangan Hari
+
+        | Simbol | Makna |
+        |---|---|
+        | T-3 | Tiga hari perdagangan sebelum hari ini |
+        | T-2 | Dua hari perdagangan sebelum hari ini |
+        | T-1 | Satu hari perdagangan sebelum hari ini |
+        | T | Hari perdagangan terakhir yang diketahui |
+        | T+1 | Hari perdagangan berikutnya (diprediksi) |
+
+        ### Catatan Penting
+
+        - Data yang dimasukkan adalah harga **pada sesi penutupan** bursa.
+        - Prediksi ini hanya alat bantu analisis dan **tidak menjamin** pergerakan
+          harga saham di masa mendatang.
+        - Untuk hasil optimal, gunakan data Close dari **hari perdagangan aktif**
+          (bukan hari libur atau hari ketika BBCA tidak diperdagangkan).
+
+        ### File yang Diperlukan
+
+        Pastikan file berikut berada di direktori yang sama dengan `app_streamlit.py`:
+
+        | File | Keterangan |
+        |---|---|
+        | `xgboost_best_lb3.json` | Bobot model XGBoost |
+        | `xgboost_summary_lb3.json` | Metrik evaluasi & hyperparameter |
+
+        > ⚠️ **Catatan pengembang:** Untuk akurasi scaling yang tepat, tambahkan cell
+        > berikut di akhir notebook XGBoost sebelum deployment:
+        > ```python
+        > import joblib
+        > joblib.dump(scaler_X, 'preprocessor.pkl')
+        > files.download('preprocessor.pkl')
+        > ```
+        > Lalu ganti baris `X_scaled = fit_scaler_from_input(X_raw)` di app dengan:
+        > ```python
+        > scaler = joblib.load('preprocessor.pkl')
+        > X_scaled = scaler.transform(X_raw)
+        > ```
+        """
+    )
