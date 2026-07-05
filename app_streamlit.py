@@ -93,7 +93,7 @@ def fit_scaler_from_input(X_raw: np.ndarray) -> np.ndarray:
 
 menu = st.sidebar.radio(
     "Menu",
-    ["Prediksi Harga", "Evaluasi Model", "Feature Importance", "Panduan Penggunaan"]
+    ["Prediksi Harga", "Feature Importance", "Panduan Penggunaan"]
 )
 
 # ==========================================================
@@ -211,104 +211,6 @@ if menu == "Prediksi Harga":
 
             except Exception as e:
                 st.error(f"Terjadi kesalahan: {e}")
-
-# ==========================================================
-# HALAMAN EVALUASI MODEL
-# ==========================================================
-
-elif menu == "Evaluasi Model":
-
-    st.title("📊 Evaluasi Model XGBoost")
-
-    test_m = summary["test_metrics"]
-    wfv_m  = summary["wfv_avg_metrics"]
-    hp     = summary["best_hyperparams"]
-
-    # ── Metrik utama ──
-    st.subheader("Metrik Evaluasi pada Data Testing")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("RMSE", f"Rp {test_m['rmse']:.2f}")
-    c2.metric("MAE",  f"Rp {test_m['mae']:.2f}")
-    c3.metric("R²",   f"{test_m['r2']:.4f}")
-
-    st.markdown("---")
-
-    # ── Walk-Forward Validation ──
-    st.subheader("Walk-Forward Validation (5-Fold Expanding Window)")
-    w1, w2, w3 = st.columns(3)
-    w1.metric("Avg RMSE (WFV)", f"Rp {wfv_m['rmse']:.2f}",
-              delta=f"±{wfv_m['rmse_std']:.2f}", delta_color="off")
-    w2.metric("Avg MAE (WFV)",  f"Rp {wfv_m['mae']:.2f}")
-    w3.metric("Avg R² (WFV)",   f"{wfv_m['r2']:.4f}")
-
-    # ── Grafik WFV per fold ──
-    if "wfv_fold_details" in summary and summary["wfv_fold_details"]:
-        folds  = summary["wfv_fold_details"]
-        fold_n = [r["fold"]  for r in folds]
-        rmses  = [r["rmse"]  for r in folds]
-        r2s    = [r["r2"]    for r in folds]
-
-        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
-        axes[0].bar(fold_n, rmses, color="steelblue", edgecolor="white")
-        axes[0].axhline(wfv_m["rmse"], color="tomato", linestyle="--", linewidth=1.5,
-                        label=f"Rata-rata: {wfv_m['rmse']:.2f}")
-        axes[0].set_title("RMSE per Fold (WFV)", fontweight="bold")
-        axes[0].set_xlabel("Fold")
-        axes[0].set_ylabel("RMSE (IDR)")
-        axes[0].legend()
-        axes[0].set_xticks(fold_n)
-
-        axes[1].bar(fold_n, r2s, color="seagreen", edgecolor="white")
-        axes[1].axhline(wfv_m["r2"], color="tomato", linestyle="--", linewidth=1.5,
-                        label=f"Rata-rata: {wfv_m['r2']:.4f}")
-        axes[1].set_title("R² per Fold (WFV)", fontweight="bold")
-        axes[1].set_xlabel("Fold")
-        axes[1].set_ylabel("R²")
-        axes[1].legend()
-        axes[1].set_xticks(fold_n)
-
-        plt.tight_layout()
-        st.pyplot(fig)
-
-    st.markdown("---")
-
-    # ── Informasi model ──
-    st.subheader("Informasi Model")
-    col_info, col_hp = st.columns(2)
-
-    with col_info:
-        st.markdown(
-            f"""
-            | Atribut | Detail |
-            |---|---|
-            | Algoritma | XGBoost |
-            | Target | Harga Close T+1 (via log-return) |
-            | Lookback | {BEST_LOOKBACK} hari |
-            | Jumlah Fitur | {len(FEATURE_NAMES)} fitur (5 kolom × {BEST_LOOKBACK} lag) |
-            | Fitur Dasar | Open, High, Low, Close, Volume |
-            | Transformasi | Log-return (harga), log1p (volume) |
-            """
-        )
-
-    with col_hp:
-        st.markdown("**Hyperparameter Terbaik (Optuna)**")
-        hp_df = pd.DataFrame(
-            [(k, f"{v:.6f}" if isinstance(v, float) else str(v))
-             for k, v in hp.items()],
-            columns=["Hyperparameter", "Nilai"]
-        )
-        st.dataframe(hp_df, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-
-    # ── Interpretasi ──
-    st.subheader("Interpretasi Hasil")
-    st.success(
-        f"Nilai R² sebesar **{test_m['r2']:.4f}** menunjukkan model mampu menjelaskan "
-        f"**{test_m['r2'] * 100:.2f}%** variasi harga Close BBCA pada data testing. "
-        f"RMSE sebesar **Rp {test_m['rmse']:.2f}** mengindikasikan rata-rata deviasi "
-        f"prediksi dari harga aktual sebesar nilai tersebut dalam satuan Rupiah."
-    )
 
 # ==========================================================
 # HALAMAN FEATURE IMPORTANCE
@@ -549,26 +451,5 @@ else:
         - Untuk hasil optimal, gunakan data Close dari **hari perdagangan aktif**
           (bukan hari libur atau hari ketika BBCA tidak diperdagangkan).
 
-        ### File yang Diperlukan
-
-        Pastikan file berikut berada di direktori yang sama dengan `app_streamlit.py`:
-
-        | File | Keterangan |
-        |---|---|
-        | `xgboost_best_lb3.json` | Bobot model XGBoost |
-        | `xgboost_summary_lb3.json` | Metrik evaluasi & hyperparameter |
-
-        > ⚠️ **Catatan pengembang:** Untuk akurasi scaling yang tepat, tambahkan cell
-        > berikut di akhir notebook XGBoost sebelum deployment:
-        > ```python
-        > import joblib
-        > joblib.dump(scaler_X, 'preprocessor.pkl')
-        > files.download('preprocessor.pkl')
-        > ```
-        > Lalu ganti baris `X_scaled = fit_scaler_from_input(X_raw)` di app dengan:
-        > ```python
-        > scaler = joblib.load('preprocessor.pkl')
-        > X_scaled = scaler.transform(X_raw)
-        > ```
         """
     )
