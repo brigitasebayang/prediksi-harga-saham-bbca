@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import joblib                          # FIX #2: tambah import joblib untuk load scaler
 import json
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -24,11 +25,17 @@ st.set_page_config(
 def load_model():
     model = xgb.XGBRegressor()
     model.load_model("xgboost_best_lb3.json")
+
     with open("xgboost_summary_lb3.json", "r") as f:
         summary = json.load(f)
-    return model, summary
 
-model, summary = load_model()
+    # FIX #2: load scaler dari file yang disimpan notebook
+    scaler = joblib.load("xgboost_scaler.pkl")
+
+    return model, summary, scaler
+
+
+model, summary, scaler = load_model()    # FIX #2: tambah scaler
 
 BEST_LOOKBACK = summary["best_lookback"]   # 3
 FEATURE_NAMES = summary["feature_names"]   # 15 nama fitur
@@ -38,13 +45,29 @@ COLS          = ["Open", "High", "Low", "Close", "Volume"]
 # ==========================================================
 # HELPER: FEATURE ENGINEERING
 # Mereplikasi persis create_lag_features() dari notebook
+# ----------------------------------------------------------
+# FIX #1: ganti transformed.shift(lag).iloc[-1]
+#         → tdf.iloc[-lag]
+#
+# Penjelasan bug lama:
+#   shift(lag).iloc[-1] mengambil data dari posisi:
+#   tdf.iloc[-(lag+1)], bukan tdf.iloc[-lag].
+#   Dengan 4 baris input:
+#     lag=1 → mendapat nilai lag-2 (salah)
+#     lag=2 → mendapat nilai lag-3 (salah)
+#     lag=3 → mendapat baris-0 yang berisi NaN (4/15 NaN)
+#
+# Perbaikan: tdf.iloc[-lag] langsung mengambil
+#   lag=1 → iloc[-1] = log-return T   (paling baru)  ✓
+#   lag=2 → iloc[-2] = log-return T-1               ✓
+#   lag=3 → iloc[-3] = log-return T-2               ✓
 # ==========================================================
 
 def build_features(df: pd.DataFrame) -> np.ndarray:
     """
-    Input  : DataFrame (N_ROWS_NEEDED) baris × 5 kolom OHLCV,
+    Input  : DataFrame (N_ROWS_NEEDED × 5 kolom OHLCV),
              urutan dari paling lama (baris 0) → paling baru (baris -1)
-    Output : array (1, 15) siap masuk model
+    Output : array (1, 15) siap masuk scaler & model
     """
     price_cols = ["Open", "High", "Low", "Close"]
     transformed = {}
@@ -55,8 +78,8 @@ def build_features(df: pd.DataFrame) -> np.ndarray:
 
     feat_values = []
     for lag in range(1, BEST_LOOKBACK + 1):
-        shifted = tdf.shift(lag)
-        feat_values.extend(shifted.iloc[-1].values.tolist())
+        # FIX #1: gunakan iloc[-lag], bukan shift(lag).iloc[-1]
+        feat_values.extend(tdf.iloc[-lag].values.tolist())
 
     return np.array(feat_values).reshape(1, -1)
 
@@ -250,11 +273,12 @@ if menu == "Prediksi Harga":
 
         else:
             try:
-                # 1. Buat fitur & prediksi
-                X_raw           = build_features(df_input)
-                # Ganti baris berikut dengan scaler.transform(X_raw) jika
-                # preprocessor.pkl sudah disimpan dari notebook
-                X_scaled        = X_raw
+                # 1. Buat fitur
+                X_raw = build_features(df_input)
+
+                # FIX #2: terapkan scaler (wajib — model dilatih dengan data ter-scale)
+                X_scaled = scaler.transform(X_raw)
+
                 pred_log_return = model.predict(X_scaled)[0]
 
                 # 2. Rekonstruksi harga
@@ -434,7 +458,8 @@ else:
         | File | Keterangan |
         |---|---|
         | `xgboost_best_lb3.json` | Bobot model XGBoost |
-        | `xgboost_summary_lb3.json` | Metrik & hyperparameter |
+        | `xgboost_summary_lb3.json` | Nama fitur & hyperparameter |
+        | `xgboost_scaler.pkl` | MinMaxScaler untuk normalisasi fitur |
 
         ### Catatan
 
