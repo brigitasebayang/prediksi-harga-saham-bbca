@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import xgboost as xgb
+import joblib
 import json
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
@@ -26,13 +27,21 @@ def load_model():
     model.load_model("xgboost_best_lb3.json")
     with open("xgboost_summary_lb3.json", "r") as f:
         summary = json.load(f)
-    return model, summary
+    scaler = joblib.load("preprocessor.pkl")
+    return model, summary, scaler
 
-model, summary = load_model()
+model, summary, scaler = load_model()
 
 BEST_LOOKBACK = summary["best_lookback"]   # 3
 FEATURE_NAMES = summary["feature_names"]   # 15 nama fitur
-N_ROWS_NEEDED = BEST_LOOKBACK + 1          # 4 baris OHLCV
+# Fitur lag_k pada model ini dibentuk dari create_lag_features() di XGBoost.ipynb,
+# yaitu tdf.shift(k) yang HANYA memakai lag ke-1 s.d. lag ke-lookback (lag ke-0 /
+# return hari T sendiri TIDAK dipakai). Untuk mendapatkan lag ke-`lookback` yang
+# valid (non-NaN) dari log-return, dibutuhkan lookback + 2 titik harga mentah,
+# bukan lookback + 1 -- lag ke-1 butuh Close T-2, lag ke-lookback butuh
+# Close (T-lookback-1). Sudah diverifikasi menghasilkan angka yang identik
+# dengan create_lag_features() versi notebook.
+N_ROWS_NEEDED = BEST_LOOKBACK + 2          # 5 baris OHLCV (T-4 .. T)
 COLS          = ["Open", "High", "Low", "Close", "Volume"]
 
 # ==========================================================
@@ -209,7 +218,7 @@ if menu == "Prediksi Harga":
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
     st.info(
         f"Masukkan data OHLCV untuk **{N_ROWS_NEEDED} hari perdagangan** "
-        f"secara berurutan dari yang paling lama (T-3) hingga hari terakhir (T). "
+        f"secara berurutan dari yang paling lama (T-{N_ROWS_NEEDED - 1}) hingga hari terakhir (T). "
         f"Sistem akan memprediksi harga penutupan hari berikutnya (T+1)."
     )
 
@@ -252,9 +261,7 @@ if menu == "Prediksi Harga":
             try:
                 # 1. Buat fitur & prediksi
                 X_raw           = build_features(df_input)
-                # Ganti baris berikut dengan scaler.transform(X_raw) jika
-                # preprocessor.pkl sudah disimpan dari notebook
-                X_scaled        = X_raw
+                X_scaled        = scaler.transform(X_raw)
                 pred_log_return = model.predict(X_scaled)[0]
 
                 # 2. Rekonstruksi harga
@@ -296,7 +303,7 @@ if menu == "Prediksi Harga":
                 for idx_b, val in enumerate(harga_tampil):
                     ax_bar.text(idx_b, val + max(harga_tampil) * 0.005,
                                 f"Rp {val:,.0f}", ha="center", va="bottom", fontsize=9)
-                ax_bar.set_title("Pergerakan Harga Close (T-3 s.d. T+1 Prediksi)",
+                ax_bar.set_title(f"Pergerakan Harga Close (T-{N_ROWS_NEEDED - 1} s.d. T+1 Prediksi)",
                                  fontweight="bold")
                 ax_bar.set_ylabel("Harga (IDR)")
                 ax_bar.yaxis.set_major_formatter(
@@ -389,29 +396,38 @@ else:
         1. Pilih menu **Prediksi Harga** di sidebar.
         2. Masukkan data **Open, High, Low, Close, dan Volume** untuk
            **{N_ROWS_NEEDED} hari perdagangan** secara berurutan
-           dari T-3 (paling lama) hingga T (paling baru).
+           dari T-{N_ROWS_NEEDED - 1} (paling lama) hingga T (paling baru).
         3. Klik tombol **Prediksi Harga Besok**.
         4. Sistem menampilkan prediksi harga Close T+1 beserta
            grafik pergerakan harga dan feature importance model.
 
         ### Mengapa Butuh {N_ROWS_NEEDED} Hari?
 
-        Model XGBoost menggunakan lookback **{BEST_LOOKBACK} hari**.
-        Untuk menghasilkan **{BEST_LOOKBACK} nilai log-return**, dibutuhkan
-        **{N_ROWS_NEEDED} titik harga**:
+        Model XGBoost menggunakan lookback **{BEST_LOOKBACK} hari**, dengan fitur
+        lag ke-1 hingga lag ke-{BEST_LOOKBACK} (persis seperti fungsi
+        `create_lag_features()` pada notebook training). Return hari T itu sendiri
+        (lag ke-0) **tidak** dipakai sebagai fitur, sehingga lag ke-1 dihitung dari
+        T-1 terhadap T-2, bukan dari T terhadap T-1. Akibatnya, untuk mendapatkan
+        **{BEST_LOOKBACK} nilai log-return** yang lengkap dibutuhkan
+        **{N_ROWS_NEEDED} titik harga** (lookback + 2):
 
         | Lag | Rumus Log-Return |
         |---|---|
-        | Lag 1 (terbaru) | ln(Close_T / Close_{{T-1}}) |
-        | Lag 2 | ln(Close_{{T-1}} / Close_{{T-2}}) |
-        | Lag 3 | ln(Close_{{T-2}} / Close_{{T-3}}) |
+        | Lag 1 | ln(Close_{{T-1}} / Close_{{T-2}}) |
+        | Lag 2 | ln(Close_{{T-2}} / Close_{{T-3}}) |
+        | Lag 3 (terjauh) | ln(Close_{{T-3}} / Close_{{T-4}}) |
 
         Hal yang sama berlaku untuk kolom Open, High, Low, dan Volume,
-        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag).
+        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag). Jika hanya
+        diisi {BEST_LOOKBACK + 1} hari, fitur lag ke-{BEST_LOOKBACK} (Open/High/Low/Close)
+        akan kosong (NaN) karena titik harga T-{BEST_LOOKBACK + 1} belum tersedia.
 
         ### Cara Rekonstruksi Harga
 
-        Model memprediksi **log-return** (bukan harga langsung):
+        Fitur yang sudah dibentuk dinormalisasi terlebih dahulu menggunakan
+        **MinMaxScaler** (`preprocessor.pkl`) yang sama seperti saat pelatihan model,
+        baru kemudian diproses XGBoost untuk menghasilkan prediksi **log-return**
+        (bukan harga langsung):
 
         ```
         Close_pred(T+1) = Close_T × exp(log-return prediksi)
@@ -421,6 +437,7 @@ else:
 
         | Simbol | Makna |
         |---|---|
+        | T-4 | Empat hari perdagangan sebelum hari ini |
         | T-3 | Tiga hari perdagangan sebelum hari ini |
         | T-2 | Dua hari perdagangan sebelum hari ini |
         | T-1 | Satu hari perdagangan sebelum hari ini |
@@ -435,6 +452,7 @@ else:
         |---|---|
         | `xgboost_best_lb3.json` | Bobot model XGBoost |
         | `xgboost_summary_lb3.json` | Metrik & hyperparameter |
+        | `preprocessor.pkl` | MinMaxScaler hasil fit pada data training (wajib, dipakai untuk menormalisasi fitur sebelum prediksi) |
 
         ### Catatan
 
