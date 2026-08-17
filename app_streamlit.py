@@ -418,9 +418,7 @@ else:
         | Lag 3 (terjauh) | ln(Close_{{T-3}} / Close_{{T-4}}) |
 
         Hal yang sama berlaku untuk kolom Open, High, Low, dan Volume,
-        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag). Jika hanya
-        diisi {BEST_LOOKBACK + 1} hari, fitur lag ke-{BEST_LOOKBACK} (Open/High/Low/Close)
-        akan kosong (NaN) karena titik harga T-{BEST_LOOKBACK + 1} belum tersedia.
+        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag).
 
         ### Cara Rekonstruksi Harga
 
