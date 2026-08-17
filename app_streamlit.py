@@ -41,7 +41,7 @@ FEATURE_NAMES = summary["feature_names"]   # 15 nama fitur
 # bukan lookback + 1 -- lag ke-1 butuh Close T-2, lag ke-lookback butuh
 # Close (T-lookback-1). Sudah diverifikasi menghasilkan angka yang identik
 # dengan create_lag_features() versi notebook.
-N_ROWS_NEEDED = BEST_LOOKBACK + 2          # 5 baris OHLCV (T-4 .. T)
+N_ROWS_NEEDED = BEST_LOOKBACK + 3          # 5 baris OHLCV (T-4 .. T)
 COLS          = ["Open", "High", "Low", "Close", "Volume"]
 
 # ==========================================================
