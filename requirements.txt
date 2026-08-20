@@ -5,3 +5,5 @@ xgboost
 scikit-learn
 joblib
 matplotlib
+yfinance
+tzdata
