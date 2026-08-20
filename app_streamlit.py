@@ -6,6 +6,9 @@ import joblib
 import json
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
+import yfinance as yf
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 # ==========================================================
 # PAGE CONFIG
@@ -43,6 +46,49 @@ FEATURE_NAMES = summary["feature_names"]   # 15 nama fitur
 # dengan create_lag_features() versi notebook.
 N_ROWS_NEEDED = BEST_LOOKBACK + 2          # 5 baris OHLCV (T-4 .. T)
 COLS          = ["Open", "High", "Low", "Close", "Volume"]
+TICKER        = "BBCA.JK"                  # kode saham BBCA di Yahoo Finance
+
+# ==========================================================
+# HELPER: AMBIL DATA TERBARU DARI YAHOO FINANCE
+# ==========================================================
+
+@st.cache_data(ttl=300)  # cache 5 menit, hindari memanggil API berulang kali
+def fetch_latest_ohlcv(n_rows: int) -> pd.DataFrame:
+    """
+    Mengambil n_rows hari perdagangan terakhir BBCA yang sudah RESMI
+    CLOSE (bukan bar hari berjalan yang masih live) dari Yahoo Finance.
+
+    Definisi "harga Close" pada penelitian ini adalah harga penutupan
+    resmi akhir sesi perdagangan BEI. Karena bar hari ini bisa saja
+    masih berubah selama bursa belum tutup, baris dengan tanggal = hari
+    ini (WIB) selalu dibuang, sehingga hanya hari bursa yang sudah
+    benar-benar selesai yang dipakai.
+    """
+    raw = yf.download(
+        TICKER, period="3mo", interval="1d",
+        progress=False, auto_adjust=True
+    )
+    if raw.empty:
+        raise RuntimeError(
+            "Data tidak dapat diambil dari Yahoo Finance. Periksa koneksi "
+            "internet atau coba beberapa saat lagi."
+        )
+
+    if isinstance(raw.columns, pd.MultiIndex):
+        raw.columns = raw.columns.droplevel(1)
+    raw = raw[COLS].dropna()
+
+    today_wib = datetime.now(ZoneInfo("Asia/Jakarta")).date()
+    raw = raw[raw.index.date < today_wib]
+
+    if len(raw) < n_rows:
+        raise RuntimeError(
+            f"Data historis yang sudah close hanya tersedia {len(raw)} hari, "
+            f"padahal model membutuhkan {n_rows} hari perdagangan terakhir."
+        )
+
+    return raw.tail(n_rows)
+
 
 # ==========================================================
 # HELPER: FEATURE ENGINEERING
@@ -217,47 +263,40 @@ if menu == "Prediksi Harga":
 
     st.title("📈 Prediksi Harga Penutupan Saham BBCA")
     st.info(
-        f"Masukkan data OHLCV untuk **{N_ROWS_NEEDED} hari perdagangan** "
-        f"secara berurutan dari yang paling lama (T-{N_ROWS_NEEDED - 1}) hingga hari terakhir (T). "
-        f"Sistem akan memprediksi harga penutupan hari berikutnya (T+1)."
+        f"Aplikasi akan mengambil otomatis **{N_ROWS_NEEDED} hari perdagangan terakhir** "
+        f"BBCA yang sudah resmi close dari Yahoo Finance, lalu memprediksi harga "
+        f"penutupan hari perdagangan berikutnya (T+1)."
     )
 
-    # ── Form input ──
-    day_labels = [
-        f"T-{N_ROWS_NEEDED - 1 - i}" if i < N_ROWS_NEEDED - 1 else "T  (Hari Terakhir)"
-        for i in range(N_ROWS_NEEDED)
-    ]
+    fetch_clicked = st.button(
+        "🔄 Ambil Data Terbaru & Prediksi", use_container_width=True, type="primary"
+    )
 
-    data = []
-    for i, label in enumerate(day_labels):
-        st.subheader(f"Hari {label}")
-        c1, c2, c3, c4, c5 = st.columns(5)
-        inputs = [c1, c2, c3, c4, c5]
-        row = []
-        for j, col_name in enumerate(COLS):
-            val = inputs[j].number_input(
-                col_name,
-                min_value=0.0,
-                value=0.0,
-                step=10.0 if col_name != "Volume" else 1_000_000.0,
-                format="%.2f" if col_name != "Volume" else "%.0f",
-                key=f"{col_name}_{i}"
+    if fetch_clicked:
+        try:
+            df_input = fetch_latest_ohlcv(N_ROWS_NEEDED)
+        except Exception as e:
+            st.error(f"⚠️ Gagal mengambil data dari Yahoo Finance: {e}")
+            df_input = None
+
+        if df_input is not None:
+
+            day_labels = [
+                f"T-{N_ROWS_NEEDED - 1 - i}" if i < N_ROWS_NEEDED - 1 else "T  (Hari Terakhir)"
+                for i in range(N_ROWS_NEEDED)
+            ]
+
+            st.subheader("📋 Data yang Diambil dari Yahoo Finance")
+            preview_df = df_input.reset_index()
+            preview_df.columns = ["Tanggal"] + COLS
+            preview_df.insert(0, "Hari", day_labels)
+            preview_df["Tanggal"] = preview_df["Tanggal"].dt.strftime("%Y-%m-%d")
+            st.dataframe(preview_df, use_container_width=True, hide_index=True)
+            st.caption(
+                "Baris hari berjalan (belum resmi close) tidak pernah disertakan — "
+                "lihat Panduan Penggunaan untuk penjelasan lengkap."
             )
-            row.append(val)
-        data.append(row)
-        st.divider()
 
-    if st.button("🔮 Prediksi Harga Besok", use_container_width=True, type="primary"):
-
-        df_input = pd.DataFrame(data, columns=COLS)
-
-        if (df_input == 0).any().any():
-            st.error("⚠️ Semua kolom harus diisi dengan nilai lebih dari 0.")
-
-        elif not all(df_input["High"] >= df_input["Low"]):
-            st.error("⚠️ Nilai High harus lebih besar atau sama dengan Low di semua baris.")
-
-        else:
             try:
                 # 1. Buat fitur & prediksi
                 X_raw           = build_features(df_input)
@@ -394,12 +433,25 @@ else:
         ### Langkah-langkah Prediksi
 
         1. Pilih menu **Prediksi Harga** di sidebar.
-        2. Masukkan data **Open, High, Low, Close, dan Volume** untuk
-           **{N_ROWS_NEEDED} hari perdagangan** secara berurutan
-           dari T-{N_ROWS_NEEDED - 1} (paling lama) hingga T (paling baru).
-        3. Klik tombol **Prediksi Harga Besok**.
-        4. Sistem menampilkan prediksi harga Close T+1 beserta
-           grafik pergerakan harga dan feature importance model.
+        2. Klik tombol **Ambil Data Terbaru & Prediksi**.
+        3. Sistem otomatis menarik **{N_ROWS_NEEDED} hari perdagangan terakhir**
+           BBCA (Open, High, Low, Close, Volume) yang sudah resmi close
+           langsung dari Yahoo Finance — tidak perlu input manual.
+        4. Sistem menampilkan data yang berhasil diambil, prediksi harga
+           Close T+1, grafik pergerakan harga, dan feature importance model.
+
+        ### Dari Mana Data Diambil?
+
+        Data diambil otomatis melalui API **Yahoo Finance** (kode saham
+        **`BBCA.JK`**) menggunakan pustaka `yfinance`, persis sumber data
+        yang dipakai untuk melatih model pada penelitian ini. Karena harga
+        Close pada penelitian ini didefinisikan sebagai **harga penutupan
+        resmi akhir sesi perdagangan BEI**, baris data hari berjalan (hari
+        ini, WIB) yang mungkin masih berubah selama bursa belum tutup
+        **selalu dibuang** — aplikasi hanya memakai hari-hari bursa yang
+        sudah benar-benar selesai. Data yang berhasil diambil selalu
+        ditampilkan di layar sebelum diproses, sehingga hasilnya tetap
+        bisa diverifikasi pengguna.
 
         ### Mengapa Butuh {N_ROWS_NEEDED} Hari?
 
@@ -418,7 +470,9 @@ else:
         | Lag 3 (terjauh) | ln(Close_{{T-3}} / Close_{{T-4}}) |
 
         Hal yang sama berlaku untuk kolom Open, High, Low, dan Volume,
-        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag).
+        sehingga total terdapat **15 fitur input** (5 kolom × 3 lag). Jika hanya
+        diisi {BEST_LOOKBACK + 1} hari, fitur lag ke-{BEST_LOOKBACK} (Open/High/Low/Close)
+        akan kosong (NaN) karena titik harga T-{BEST_LOOKBACK + 1} belum tersedia.
 
         ### Cara Rekonstruksi Harga
 
@@ -452,9 +506,16 @@ else:
         | `xgboost_summary_lb3.json` | Metrik & hyperparameter |
         | `preprocessor.pkl` | MinMaxScaler hasil fit pada data training (wajib, dipakai untuk menormalisasi fitur sebelum prediksi) |
 
+        Aplikasi juga membutuhkan pustaka **`yfinance`** (lihat `requirements.txt`)
+        serta **koneksi internet aktif** untuk mengambil data terbaru dari
+        Yahoo Finance.
+
         ### Catatan
 
-        - Gunakan data harga dari **hari perdagangan aktif** bursa.
+        - Prediksi hanya bisa dijalankan apabila Yahoo Finance memiliki
+          minimal {N_ROWS_NEEDED} hari data historis BBCA yang sudah close
+          (misalnya di sekitar periode libur bursa yang panjang, pengambilan
+          data bisa gagal — coba lagi di hari bursa berikutnya).
         - Prediksi ini hanya alat bantu analisis dan **tidak menjamin**
           pergerakan harga saham di masa mendatang.
         """
